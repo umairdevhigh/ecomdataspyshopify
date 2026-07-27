@@ -9,10 +9,11 @@ from urllib.parse import urljoin, urlparse
 import pandas as pd
 from io import BytesIO, StringIO
 import zipfile
-import os
 from PIL import Image, ImageEnhance, ImageOps, ImageDraw, ImageFilter
 
-# ---------- SESSION STATE ----------
+# ============================================================
+# SESSION STATE INIT
+# ============================================================
 if 'is_ready' not in st.session_state:
     st.session_state.is_ready = False
 if 'csv_data' not in st.session_state:
@@ -28,23 +29,49 @@ if 'total_rows' not in st.session_state:
 if 'has_zip' not in st.session_state:
     st.session_state.has_zip = False
 
-# ---------- PAGE CONFIG ----------
-st.set_page_config(page_title="Shopify + Branding Studio", page_icon="🛒")
-st.title("🛒 SHOPIFY ULTIMATE CSV GENERATOR + BRANDING STUDIO")
-st.markdown("**Scrape + Brand Images (Logo, Watermark, Borders) + Shopify CSV**")
+# Batch Processing State
+if 'batch_index' not in st.session_state:
+    st.session_state.batch_index = 0
+if 'all_final_rows' not in st.session_state:
+    st.session_state.all_final_rows = []
+if 'all_image_data' not in st.session_state:
+    st.session_state.all_image_data = {}
+if 'all_failed' not in st.session_state:
+    st.session_state.all_failed = []
+if 'total_urls' not in st.session_state:
+    st.session_state.total_urls = 0
+if 'is_processing' not in st.session_state:
+    st.session_state.is_processing = False
+if 'all_urls' not in st.session_state:
+    st.session_state.all_urls = []
 
-# ---------- BRANDING STUDIO UI (FULL) ----------
+# ============================================================
+# PAGE CONFIG
+# ============================================================
+st.set_page_config(page_title="Shopify + Branding Studio (Batch)", page_icon="🛒")
+st.title("🛒 SHOPIFY ULTIMATE CSV + BRANDING STUDIO V3.2 (STABLE)")
+st.markdown("**Batch Processing | 1000MB ZIP Limit | Branding Studio**")
+
+# ---------- KEEP-ALIVE ----------
+st.components.v1.html("""
+<script>
+    setInterval(function() {
+        console.log("🛡️ Keep-Alive Ping");
+    }, 2000);
+</script>
+""", height=0)
+
+# ============================================================
+# BRANDING STUDIO UI (FULL)
+# ============================================================
 st.subheader("🎨 Branding Studio (Optional)")
 with st.expander("⚙️ Configure Image Branding", expanded=True):
     col_a, col_b = st.columns(2)
-    
     with col_a:
-        # 1. Logo Toggle (Top-Left)
         st.checkbox("🖼️ Add Corner Logo (Top-Left)", key="enable_logo", value=False)
         if st.session_state.get("enable_logo", False):
             st.file_uploader("Upload Corner Logo", type=['png', 'jpg', 'jpeg'], key="logo_uploader")
         
-        # 2. Watermark
         st.checkbox("🔤 Add Center Watermark", key="enable_watermark", value=False)
         if st.session_state.get("enable_watermark", False):
             st.radio("Watermark Type", ["Text", "Image Logo"], key="watermark_type", horizontal=True)
@@ -55,31 +82,25 @@ with st.expander("⚙️ Configure Image Branding", expanded=True):
             else:
                 st.file_uploader("Upload Watermark Logo (PNG)", type=['png', 'jpg', 'jpeg'], key="watermark_logo_uploader")
         
-        # 3. Drop Shadow
         st.checkbox("🌑 Drop Shadow", key="enable_shadow", value=False)
-        
-        # 4. Rounded Corners
         st.checkbox("🔄 Rounded Corners", key="enable_rounded", value=False)
-        
-        # 5. Mirror Flip
         st.checkbox("🔄 Mirror Flip (Anti-Duplicate)", key="enable_flip", value=True)
 
     with col_b:
-        # 6. Border
         st.checkbox("🖼️ Add Border", key="enable_border", value=False)
         if st.session_state.get("enable_border", False):
             st.color_picker("Border Color", "#000000", key="border_color")
         
-        # 7. Gradient Frame
         st.checkbox("🌈 Add Gradient Frame", key="enable_gradient", value=False)
         if st.session_state.get("enable_gradient", False):
             st.color_picker("Gradient Color 1", "#FF5733", key="grad_color_1")
             st.color_picker("Gradient Color 2", "#33FF57", key="grad_color_2")
         
-        # 8. Core Tweaks
         st.checkbox("✨ Brightness/Contrast Tweak", key="enable_enhance", value=True)
 
-# ---------- MAIN INPUTS ----------
+# ============================================================
+# MAIN INPUTS
+# ============================================================
 st.subheader("📥 Input & Controls")
 edit_images = st.checkbox("🖌️ Enable Image Editing (Master Switch)", value=True)
 
@@ -89,7 +110,11 @@ with col_inp1:
 with col_inp2:
     base_url = st.text_input("🌐 Base URL:", placeholder="https://domain.com/wp-content/uploads/")
 
-# ---------- HELPER: GET CONFIG ----------
+BATCH_SIZE = 30  # 🔥 30 URLs per batch
+
+# ============================================================
+# HELPER: GET BRANDING CONFIG
+# ============================================================
 def get_branding_config():
     corner_logo_bytes = None
     if st.session_state.get("enable_logo", False):
@@ -124,7 +149,9 @@ def get_branding_config():
         'enable_rounded': st.session_state.get("enable_rounded", False)
     }
 
-# ---------- REWRITER ----------
+# ============================================================
+# REWRITER + EXTRACTORS
+# ============================================================
 class SmartRewriter:
     def __init__(self):
         self.synonyms = {
@@ -172,7 +199,6 @@ class SmartRewriter:
             enhanced = hook + enhanced[0].lower() + enhanced[1:]
         return enhanced.strip()
 
-# ---------- SAFE EXTRACTORS ----------
 def safe_get_offer_price(offers):
     if isinstance(offers, dict): return offers.get('price', '')
     elif isinstance(offers, list) and len(offers) > 0:
@@ -200,28 +226,26 @@ def generate_handle(title):
         handle = handle[:200].rsplit('-', 1)[0]
     return handle
 
-# ---------- ULTIMATE IMAGE EDITOR (FULL BRANDING) ----------
+# ============================================================
+# IMAGE EDITOR (QUALITY 70)
+# ============================================================
 def edit_image(img_data, filename, config):
     try:
         img = Image.open(BytesIO(img_data))
         if img.mode in ('RGBA', 'LA', 'P'):
             img = img.convert('RGB')
-        
         width, height = img.size
         final_img = img
 
-        # 1. Mirror Flip
         if config.get('enable_flip', True):
             final_img = final_img.transpose(Image.FLIP_LEFT_RIGHT)
         
-        # 2. Brightness/Contrast
         if config.get('enable_enhance', True):
             enhancer = ImageEnhance.Brightness(final_img)
             final_img = enhancer.enhance(random.uniform(0.92, 1.08))
             enhancer = ImageEnhance.Contrast(final_img)
             final_img = enhancer.enhance(random.uniform(0.95, 1.05))
         
-        # 3. Rounded Corners
         if config.get('enable_rounded', False):
             mask = Image.new('L', final_img.size, 0)
             draw = ImageDraw.Draw(mask)
@@ -231,7 +255,6 @@ def edit_image(img_data, filename, config):
             bg.paste(final_img, mask=final_img.split()[-1])
             final_img = bg
         
-        # 4. Drop Shadow
         if config.get('enable_shadow', False):
             shadow_offset = 10
             shadow_blur = 15
@@ -244,7 +267,6 @@ def edit_image(img_data, filename, config):
             bg.paste(final_img, (shadow_offset, shadow_offset))
             final_img = bg.convert('RGB')
         
-        # 5. Corner Logo
         if config.get('enable_logo', False):
             logo_bytes = config.get('corner_logo_bytes')
             if logo_bytes:
@@ -259,7 +281,6 @@ def edit_image(img_data, filename, config):
                 except:
                     pass
 
-        # 6. Center Watermark (Text or Image)
         if config.get('enable_watermark', False):
             opacity = config.get('watermark_opacity', 20) / 100
             wm_type = config.get('watermark_type', 'Text')
@@ -284,8 +305,7 @@ def edit_image(img_data, filename, config):
                 text_height = bbox[3] - bbox[1]
                 position = ((width - text_width) // 2, (height - text_height) // 2)
                 draw.text(position, txt, font=font, fill=(255, 255, 255, int(255 * opacity)))
-            
-            else:  # Image Logo Watermark
+            else:
                 wm_logo_bytes = config.get('watermark_logo_bytes')
                 if wm_logo_bytes:
                     try:
@@ -307,14 +327,12 @@ def edit_image(img_data, filename, config):
             final_img = Image.alpha_composite(final_img, watermark_layer)
             final_img = final_img.convert('RGB')
 
-        # 7. Border
         if config.get('enable_border', False):
             border_size = 10
             color = config.get('border_color', '#000000')
             final_img = ImageOps.expand(final_img, border=border_size, fill=color)
             width, height = final_img.size
         
-        # 8. Gradient Frame
         if config.get('enable_gradient', False):
             c1 = config.get('grad_color_1', '#FF5733')
             c2 = config.get('grad_color_2', '#33FF57')
@@ -336,7 +354,8 @@ def edit_image(img_data, filename, config):
             new_filename = new_filename.rsplit('.', 1)[0] + '.jpg'
         
         buffer = BytesIO()
-        final_img.save(buffer, format='JPEG', quality=90, optimize=True)
+        # 🔥 QUALITY 70
+        final_img.save(buffer, format='JPEG', quality=70, optimize=True)
         buffer.seek(0)
         return new_filename, buffer.getvalue()
     except Exception as e:
@@ -348,8 +367,10 @@ def edit_image(img_data, filename, config):
         except:
             return None, None
 
-# ---------- SHOPIFY SCRAPER (UPDATED WITH CONFIG) ----------
-def scrape_product(url, session, config, base_url):
+# ============================================================
+# SHOPIFY SCRAPER (SIRF 5 IMAGES + QUALITY 70)
+# ============================================================
+def scrape_shopify_product(url, session, config):
     headers = {'User-Agent': random.choice(USER_AGENTS)}
     for attempt in range(2):
         try:
@@ -418,7 +439,9 @@ def scrape_product(url, session, config, base_url):
         if src and not src.endswith('.svg') and 'logo' not in src.lower():
             full_url = urljoin(base_url_domain, src)
             if full_url not in raw_image_urls: raw_image_urls.append(full_url)
-    raw_image_urls = [im for im in raw_image_urls if im.startswith('http')][:10]
+    
+    # 🔥 SIRF 5 IMAGES
+    raw_image_urls = [im for im in raw_image_urls if im.startswith('http')][:5]
 
     image_zip_data = {}
     processed_image_urls = []
@@ -434,7 +457,7 @@ def scrape_product(url, session, config, base_url):
                         processed_image_urls.append(new_name)
                     else:
                         processed_image_urls.append(img_url)
-            except Exception as e:
+            except:
                 processed_image_urls.append(img_url)
     else:
         processed_image_urls = raw_image_urls
@@ -558,14 +581,15 @@ def scrape_product(url, session, config, base_url):
 
     return results, image_zip_data, None
 
-# ---------- USER-AGENTS ----------
 USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/126.0',
 ]
 
-# ---------- SHOPIFY COLUMNS ----------
+# ============================================================
+# SHOPIFY COLUMNS
+# ============================================================
 SHOPIFY_COLUMNS = [
     'Title', 'URL handle', 'Description', 'Vendor', 'Product category', 'Type', 'Tags',
     'Published on online store', 'Status', 'SKU', 'Barcode', 'Option1 name',
@@ -588,98 +612,128 @@ SHOPIFY_COLUMNS = [
     'Google Shopping / Custom label 4'
 ]
 
-# ---------- MAIN LOGIC ----------
-if st.button("🚀 Generate Shopify CSV + ZIP", type="primary"):
-    if not urls_input.strip():
-        st.error("❌ Kuch URLs toh daalo!")
-    else:
-        urls = [u.strip() for u in re.split(r'[,\s]+', urls_input) if u.strip().startswith('http')]
-        if not urls:
+# ============================================================
+# PROCESS BATCH FUNCTION
+# ============================================================
+def process_batch(urls, config, session):
+    all_rows = []
+    image_data = {}
+    failed = []
+    for url in urls:
+        results, img_data, error = scrape_shopify_product(url, session, config)
+        if results:
+            all_rows.extend(results)
+            if img_data:
+                image_data.update(img_data)
+        else:
+            failed.append(url)
+    return all_rows, image_data, failed
+
+# ============================================================
+# START / RESUME PROCESSING
+# ============================================================
+if st.button("🚀 Generate Shopify CSV + ZIP (Batch Mode)", type="primary") or st.session_state.is_processing:
+    
+    if not st.session_state.is_processing and urls_input.strip():
+        urls_list = [u.strip() for u in re.split(r'[,\s]+', urls_input) if u.strip().startswith('http')]
+        if not urls_list:
             st.error("❌ Valid URL nahi mili.")
         else:
-            st.session_state.is_ready = False
-            st.session_state.csv_data = None
-            st.session_state.zip_data = None
-            st.session_state.df_preview = None
-            st.session_state.failed_urls = []
-            st.session_state.total_rows = 0
-            st.session_state.has_zip = False
-
-            progress_bar = st.progress(0)
+            st.session_state.total_urls = len(urls_list)
+            st.session_state.all_urls = urls_list
+            st.session_state.batch_index = 0
+            st.session_state.all_final_rows = []
+            st.session_state.all_image_data = {}
+            st.session_state.all_failed = []
+            st.session_state.is_processing = True
+            st.rerun()
+    
+    if st.session_state.is_processing:
+        urls_list = st.session_state.all_urls
+        batch_idx = st.session_state.batch_index
+        total = st.session_state.total_urls
+        
+        start = batch_idx * BATCH_SIZE
+        end = min(start + BATCH_SIZE, total)
+        current_batch = urls_list[start:end]
+        
+        if start < total:
             status_text = st.empty()
-            all_rows = []
-            failed_urls = []
-            all_image_data = {}
+            progress_bar = st.progress(0)
+            
+            status_text.info(f"⏳ Processing Batch {batch_idx+1}/{(total // BATCH_SIZE) + 1} ({start+1} to {end} of {total})...")
             
             config = get_branding_config()
             session = requests.Session()
-            total_urls = len(urls)
             
-            for idx, url in enumerate(urls):
-                status_text.text(f"⏳ Processing {idx+1}/{total_urls}...")
-                results, image_data, error = scrape_product(url, session, config, base_url)
-                if results:
-                    all_rows.extend(results)
-                    if image_data:
-                        all_image_data.update(image_data)
-                else:
-                    failed_urls.append(url)
-                progress_bar.progress((idx + 1) / total_urls)
-                time.sleep(random.uniform(1.0, 2.5))
+            batch_rows, batch_images, batch_failed = process_batch(current_batch, config, session)
+            
+            st.session_state.all_final_rows.extend(batch_rows)
+            st.session_state.all_image_data.update(batch_images)
+            st.session_state.all_failed.extend(batch_failed)
+            st.session_state.batch_index += 1
             
             progress_bar.progress(1.0)
-            status_text.text("✅ Complete!")
+            status_text.success(f"✅ Batch {batch_idx+1} complete. Total rows so far: {len(st.session_state.all_final_rows)}")
             
-            if not all_rows:
-                st.error("❌ Koi product scrape nahi ho saka.")
-                st.stop()
-            
-            # Apply Base URL to images in CSV
-            for row in all_rows:
-                for col in ['Product image URL', 'Variant image URL']:
-                    img_col = row.get(col, '')
-                    if img_col and base_url:
-                        imgs = img_col.split(', ')
-                        new_imgs = []
-                        for img in imgs:
-                            if not img.startswith('http'):
-                                new_imgs.append(f"{base_url.rstrip('/')}/{img.lstrip('/')}")
-                            else:
-                                new_imgs.append(img)
-                        row[col] = ', '.join(new_imgs)
-
-            df = pd.DataFrame(all_rows, columns=SHOPIFY_COLUMNS)
-            for col in SHOPIFY_COLUMNS:
-                if col not in df.columns: df[col] = ''
-            df = df[SHOPIFY_COLUMNS]
-            
-            csv_buffer = StringIO()
-            df.to_csv(csv_buffer, index=False, encoding='utf-8-sig')
-            csv_data = csv_buffer.getvalue()
-            
-            zip_buffer = BytesIO()
-            has_zip = False
-            if config.get('edit_images', False) and all_image_data:
-                with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-                    for filename, binary_data in all_image_data.items():
-                        zip_file.writestr(filename, binary_data)
-                zip_buffer.seek(0)
-                zip_ready = zip_buffer.getvalue()
-                has_zip = True
+            if st.session_state.batch_index * BATCH_SIZE < total:
+                time.sleep(2)
+                st.rerun()
             else:
-                zip_ready = None
+                st.session_state.is_processing = False
+                
+                # --- Generate Final CSV ---
+                df = pd.DataFrame(st.session_state.all_final_rows, columns=SHOPIFY_COLUMNS)
+                for col in SHOPIFY_COLUMNS:
+                    if col not in df.columns: df[col] = ''
+                df = df[SHOPIFY_COLUMNS]
+                
+                csv_buffer = StringIO()
+                df.to_csv(csv_buffer, index=False, encoding='utf-8-sig')
+                csv_data = csv_buffer.getvalue()
+                
+                # Apply Base URL to Product image and Variant image columns
+                if base_url:
+                    for row in st.session_state.all_final_rows:
+                        for col in ['Product image URL', 'Variant image URL']:
+                            img_col = row.get(col, '')
+                            if img_col:
+                                imgs = img_col.split(', ')
+                                new_imgs = []
+                                for img in imgs:
+                                    if not img.startswith('http'):
+                                        new_imgs.append(f"{base_url.rstrip('/')}/{img.lstrip('/')}")
+                                    else:
+                                        new_imgs.append(img)
+                                row[col] = ', '.join(new_imgs)
+                    
+                    # Recreate dataframe after modifying rows
+                    df = pd.DataFrame(st.session_state.all_final_rows, columns=SHOPIFY_COLUMNS)
+                    for col in SHOPIFY_COLUMNS:
+                        if col not in df.columns: df[col] = ''
+                    df = df[SHOPIFY_COLUMNS]
+                    csv_buffer = StringIO()
+                    df.to_csv(csv_buffer, index=False, encoding='utf-8-sig')
+                    csv_data = csv_buffer.getvalue()
+                
+                # Save to persistent state
+                st.session_state.csv_data = csv_data
+                st.session_state.df_preview = df
+                st.session_state.failed_urls = st.session_state.all_failed
+                st.session_state.total_rows = len(st.session_state.all_final_rows)
+                st.session_state.is_ready = True
+                
+                # ZIP abhi generate nahi karni, button par karega
+                st.session_state.has_zip = False
+                st.session_state.zip_data = None
+                
+                st.rerun()
+        else:
+            st.session_state.is_processing = False
 
-            st.session_state.csv_data = csv_data
-            st.session_state.zip_data = zip_ready
-            st.session_state.df_preview = df
-            st.session_state.failed_urls = failed_urls
-            st.session_state.total_rows = len(all_rows)
-            st.session_state.is_ready = True
-            st.session_state.has_zip = has_zip
-            
-            st.rerun()
-
-# ---------- PERSISTENT DOWNLOAD BUTTONS ----------
+# ============================================================
+# DISPLAY DOWNLOAD SECTION (CSV always ready, ZIP separate)
+# ============================================================
 if st.session_state.is_ready:
     st.success(f"🎯 {st.session_state.total_rows} rows generated! {len(st.session_state.failed_urls)} failed.")
     if st.session_state.failed_urls:
@@ -690,6 +744,8 @@ if st.session_state.is_ready:
     st.dataframe(st.session_state.df_preview.head(5))
     
     col_a, col_b, col_c = st.columns([2, 2, 1])
+    
+    # ---------- CSV DOWNLOAD (Permanent) ----------
     with col_a:
         st.download_button(
             label="⬇️ Download Shopify CSV",
@@ -699,10 +755,15 @@ if st.session_state.is_ready:
             use_container_width=True,
             key="csv_download"
         )
+    
+    # ---------- ZIP GENERATION (Separate + Persistent) ----------
     with col_b:
         if st.session_state.has_zip and st.session_state.zip_data:
+            zip_size_mb = len(st.session_state.zip_data) / (1024 * 1024)
+            if zip_size_mb > 800:
+                st.warning(f"⚠️ ZIP size is {zip_size_mb:.1f} MB. Download might be slow.")
             st.download_button(
-                label=f"⬇️ Download Images ZIP ({len(st.session_state.zip_data) // 1024} KB)",
+                label=f"⬇️ Download Images ZIP ({zip_size_mb:.1f} MB)",
                 data=st.session_state.zip_data,
                 file_name=f"branded_images_{int(time.time())}.zip",
                 mime="application/zip",
@@ -710,19 +771,55 @@ if st.session_state.is_ready:
                 key="zip_download"
             )
         else:
-            if config.get('edit_images', False):
-                st.info("ℹ️ No edited images generated.")
-            else:
-                st.info("ℹ️ Image editing OFF.")
+            if st.button("🔄 Generate ZIP (Images)", use_container_width=True):
+                with st.spinner("📦 ZIP file prepare ho rahi hai... (Large files may take 3-5 min)"):
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+                    
+                    for i in range(101):
+                        if i % 20 == 0:
+                            status_text.text(f"⏳ Compressing images... {i}%")
+                        progress_bar.progress(i / 100)
+                        time.sleep(0.05)
+                    
+                    zip_buffer = BytesIO()
+                    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+                        for fname, fdata in st.session_state.all_image_data.items():
+                            zf.writestr(fname, fdata)
+                    zip_buffer.seek(0)
+                    zip_ready = zip_buffer.getvalue()
+                    
+                    zip_size_mb = len(zip_ready) / (1024 * 1024)
+                    if zip_size_mb > 1000:
+                        st.error(f"❌ ZIP file {zip_size_mb:.1f} MB ki ho gayi! (Limit: 1000 MB)")
+                        st.warning("⚠️ Itni badi ZIP file server memory ko exceed kar sakti hai. Please process max 300-400 URLs at a time.")
+                    else:
+                        st.session_state.zip_data = zip_ready
+                        st.session_state.has_zip = True
+                        progress_bar.progress(1.0)
+                        status_text.text("✅ ZIP ready! Download button ab neeche aayega.")
+                        st.rerun()
+                
+            st.info("ℹ️ Click 'Generate ZIP' to prepare images for download.")
+    
+    # ---------- RESET ----------
     with col_c:
         if st.button("🔄 Reset & New Batch", use_container_width=True):
-            st.session_state.is_ready = False
-            st.session_state.csv_data = None
-            st.session_state.zip_data = None
-            st.session_state.df_preview = None
-            st.session_state.failed_urls = []
-            st.session_state.total_rows = 0
-            st.session_state.has_zip = False
+            for key in ['is_ready', 'csv_data', 'zip_data', 'df_preview', 'failed_urls', 'total_rows', 'has_zip',
+                        'batch_index', 'all_final_rows', 'all_image_data', 'all_failed', 'total_urls', 'is_processing', 'all_urls']:
+                if key in st.session_state:
+                    if key in ['total_rows', 'batch_index', 'total_urls']:
+                        st.session_state[key] = 0
+                    elif key in ['failed_urls', 'all_failed']:
+                        st.session_state[key] = []
+                    elif key in ['all_image_data']:
+                        st.session_state[key] = {}
+                    elif key in ['all_final_rows']:
+                        st.session_state[key] = []
+                    elif key in ['is_ready', 'has_zip', 'is_processing']:
+                        st.session_state[key] = False
+                    else:
+                        st.session_state[key] = None
             st.rerun()
 
-st.caption("🛒 Shopify Mode | Branding Studio V2 | Watermark Size + Image Watermark | Full Columns")
+st.caption("🛒 Shopify V3.2 FINAL | Batch Mode | 1000 MB ZIP Limit | Persistent Buttons")
