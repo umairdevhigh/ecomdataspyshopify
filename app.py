@@ -48,11 +48,10 @@ if 'all_urls' not in st.session_state:
 # ============================================================
 # PAGE CONFIG
 # ============================================================
-st.set_page_config(page_title="Shopify + Branding Studio (Batch)", page_icon="🛒")
-st.title("🛒 SHOPIFY ULTIMATE CSV + BRANDING STUDIO V3.2 (STABLE)")
-st.markdown("**Batch Processing | 1000MB ZIP Limit | Branding Studio**")
+st.set_page_config(page_title="Shopify + Branding Studio (Images Fix)", page_icon="🛒")
+st.title("🛒 SHOPIFY ULTIMATE CSV + BRANDING STUDIO V3.3 (IMAGES FIX)")
+st.markdown("**Image rows now split as per Shopify guidelines | Batch + Branding**")
 
-# ---------- KEEP-ALIVE ----------
 st.components.v1.html("""
 <script>
     setInterval(function() {
@@ -110,7 +109,7 @@ with col_inp1:
 with col_inp2:
     base_url = st.text_input("🌐 Base URL:", placeholder="https://domain.com/wp-content/uploads/")
 
-BATCH_SIZE = 30  # 🔥 30 URLs per batch
+BATCH_SIZE = 30
 
 # ============================================================
 # HELPER: GET BRANDING CONFIG
@@ -354,7 +353,6 @@ def edit_image(img_data, filename, config):
             new_filename = new_filename.rsplit('.', 1)[0] + '.jpg'
         
         buffer = BytesIO()
-        # 🔥 QUALITY 70
         final_img.save(buffer, format='JPEG', quality=70, optimize=True)
         buffer.seek(0)
         return new_filename, buffer.getvalue()
@@ -368,7 +366,7 @@ def edit_image(img_data, filename, config):
             return None, None
 
 # ============================================================
-# SHOPIFY SCRAPER (SIRF 5 IMAGES + QUALITY 70)
+# SHOPIFY SCRAPER (FIXED: Images now separate rows)
 # ============================================================
 def scrape_shopify_product(url, session, config):
     headers = {'User-Agent': random.choice(USER_AGENTS)}
@@ -440,7 +438,6 @@ def scrape_shopify_product(url, session, config):
             full_url = urljoin(base_url_domain, src)
             if full_url not in raw_image_urls: raw_image_urls.append(full_url)
     
-    # 🔥 SIRF 5 IMAGES
     raw_image_urls = [im for im in raw_image_urls if im.startswith('http')][:5]
 
     image_zip_data = {}
@@ -462,7 +459,9 @@ def scrape_shopify_product(url, session, config):
     else:
         processed_image_urls = raw_image_urls
     
-    images_str = ', '.join(processed_image_urls) if processed_image_urls else ''
+    # -------------------- SHOPIFY IMAGES FIX (SPLIT INTO ROWS) --------------------
+    main_image = processed_image_urls[0] if processed_image_urls else ''
+    additional_images = processed_image_urls[1:] if len(processed_image_urls) > 1 else []
 
     category_str = format_category(soup)
     vendor = "Imported Vendor"
@@ -498,6 +497,7 @@ def scrape_shopify_product(url, session, config):
         if len(attr_names) > 1: opt2_name = attr_names[1]
         if len(attr_names) > 2: opt3_name = attr_names[2]
 
+    # -------------------- PARENT ROW (WITH MAIN IMAGE) --------------------
     parent_row = {
         'Title': title, 'URL handle': handle, 'Description': long_desc, 'Vendor': vendor,
         'Product category': category_str, 'Type': 'Graphic shirt' if 'shirt' in title.lower() else 'Clothing',
@@ -509,7 +509,9 @@ def scrape_shopify_product(url, session, config):
         'Unit price total measure': '', 'Unit price total measure unit': '', 'Unit price base measure': '', 'Unit price base measure unit': '',
         'Inventory tracker': '', 'Inventory quantity': '', 'Continue selling when out of stock': '',
         'Weight value (grams)': '', 'Weight unit for display': '', 'Requires shipping': 'TRUE',
-        'Fulfillment service': 'manual', 'Product image URL': images_str, 'Image position': '1',
+        'Fulfillment service': 'manual', 
+        'Product image URL': main_image,  # 🔥 SIRF PEHLI IMAGE
+        'Image position': '1',
         'Image alt text': title, 'Variant image URL': '', 'Gift card': 'FALSE',
         'SEO title': title, 'SEO description': long_desc[:300],
         'Color (product.metafields.shopify.color-pattern)': '', 'Google Shopping / Google product category': category_str,
@@ -518,8 +520,19 @@ def scrape_shopify_product(url, session, config):
         'Google Shopping / Custom product': '', 'Google Shopping / Custom label 0': '', 'Google Shopping / Custom label 1': '',
         'Google Shopping / Custom label 2': '', 'Google Shopping / Custom label 3': '', 'Google Shopping / Custom label 4': ''
     }
-    results = [parent_row]
 
+    # -------------------- ADDITIONAL IMAGE ROWS (SIRF HANDLE + IMAGE URL) --------------------
+    image_rows = []
+    for idx, img_url in enumerate(additional_images, start=2):
+        # Empty row template
+        img_row = {col: '' for col in SHOPIFY_COLUMNS}
+        img_row['URL handle'] = handle
+        img_row['Product image URL'] = img_url
+        img_row['Image position'] = str(idx)
+        image_rows.append(img_row)
+
+    # -------------------- VARIATIONS ROWS --------------------
+    variant_rows = []
     if variations_data:
         for idx, var in enumerate(variations_data):
             var_sku = f"{parent_sku}-{var.get('sku', random.randint(100,999))}"
@@ -566,7 +579,7 @@ def scrape_shopify_product(url, session, config):
                 'Google Shopping / Custom label 0': '', 'Google Shopping / Custom label 1': '',
                 'Google Shopping / Custom label 2': '', 'Google Shopping / Custom label 3': '', 'Google Shopping / Custom label 4': ''
             }
-            results.append(variant_row)
+            variant_rows.append(variant_row)
     
     if not variations_data:
         parent_row['SKU'] = parent_sku
@@ -579,7 +592,10 @@ def scrape_shopify_product(url, session, config):
         parent_row['Fulfillment service'] = 'manual'
         parent_row['Barcode'] = random.randint(1000000000, 9999999999)
 
-    return results, image_zip_data, None
+    # Combine all rows: Parent -> Image Rows -> Variant Rows
+    final_rows = [parent_row] + image_rows + variant_rows
+    
+    return final_rows, image_zip_data, None
 
 USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
@@ -707,7 +723,6 @@ if st.button("🚀 Generate Shopify CSV + ZIP (Batch Mode)", type="primary") or 
                                         new_imgs.append(img)
                                 row[col] = ', '.join(new_imgs)
                     
-                    # Recreate dataframe after modifying rows
                     df = pd.DataFrame(st.session_state.all_final_rows, columns=SHOPIFY_COLUMNS)
                     for col in SHOPIFY_COLUMNS:
                         if col not in df.columns: df[col] = ''
@@ -716,14 +731,12 @@ if st.button("🚀 Generate Shopify CSV + ZIP (Batch Mode)", type="primary") or 
                     df.to_csv(csv_buffer, index=False, encoding='utf-8-sig')
                     csv_data = csv_buffer.getvalue()
                 
-                # Save to persistent state
                 st.session_state.csv_data = csv_data
                 st.session_state.df_preview = df
                 st.session_state.failed_urls = st.session_state.all_failed
                 st.session_state.total_rows = len(st.session_state.all_final_rows)
                 st.session_state.is_ready = True
                 
-                # ZIP abhi generate nahi karni, button par karega
                 st.session_state.has_zip = False
                 st.session_state.zip_data = None
                 
@@ -732,7 +745,7 @@ if st.button("🚀 Generate Shopify CSV + ZIP (Batch Mode)", type="primary") or 
             st.session_state.is_processing = False
 
 # ============================================================
-# DISPLAY DOWNLOAD SECTION (CSV always ready, ZIP separate)
+# DISPLAY DOWNLOAD SECTION
 # ============================================================
 if st.session_state.is_ready:
     st.success(f"🎯 {st.session_state.total_rows} rows generated! {len(st.session_state.failed_urls)} failed.")
@@ -740,12 +753,11 @@ if st.session_state.is_ready:
         with st.expander(f"⚠️ Show {len(st.session_state.failed_urls)} Failed URLs"):
             st.write('\n'.join(st.session_state.failed_urls))
     
-    st.subheader("📊 Preview (First 5 rows)")
-    st.dataframe(st.session_state.df_preview.head(5))
+    st.subheader("📊 Preview (First 10 rows)")
+    st.dataframe(st.session_state.df_preview.head(10))
     
     col_a, col_b, col_c = st.columns([2, 2, 1])
     
-    # ---------- CSV DOWNLOAD (Permanent) ----------
     with col_a:
         st.download_button(
             label="⬇️ Download Shopify CSV",
@@ -756,7 +768,6 @@ if st.session_state.is_ready:
             key="csv_download"
         )
     
-    # ---------- ZIP GENERATION (Separate + Persistent) ----------
     with col_b:
         if st.session_state.has_zip and st.session_state.zip_data:
             zip_size_mb = len(st.session_state.zip_data) / (1024 * 1024)
@@ -797,12 +808,11 @@ if st.session_state.is_ready:
                         st.session_state.zip_data = zip_ready
                         st.session_state.has_zip = True
                         progress_bar.progress(1.0)
-                        status_text.text("✅ ZIP ready! Download button ab neeche aayega.")
+                        status_text.text("✅ ZIP ready!")
                         st.rerun()
                 
             st.info("ℹ️ Click 'Generate ZIP' to prepare images for download.")
     
-    # ---------- RESET ----------
     with col_c:
         if st.button("🔄 Reset & New Batch", use_container_width=True):
             for key in ['is_ready', 'csv_data', 'zip_data', 'df_preview', 'failed_urls', 'total_rows', 'has_zip',
@@ -822,4 +832,4 @@ if st.session_state.is_ready:
                         st.session_state[key] = None
             st.rerun()
 
-st.caption("🛒 Shopify V3.2 FINAL | Batch Mode | 1000 MB ZIP Limit | Persistent Buttons")
+st.caption("🛒 Shopify V3.3 FINAL | Images Fixed as per Shopify Guidelines | Batch Mode | 1000 MB ZIP Limit")
