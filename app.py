@@ -48,9 +48,9 @@ if 'all_urls' not in st.session_state:
 # ============================================================
 # PAGE CONFIG
 # ============================================================
-st.set_page_config(page_title="Shopify + Branding Studio (Images Fix)", page_icon="🛒")
-st.title("🛒 SHOPIFY ULTIMATE CSV + BRANDING STUDIO V3.3 (IMAGES FIX)")
-st.markdown("**Image rows now split as per Shopify guidelines | Batch + Branding**")
+st.set_page_config(page_title="Shopify + Branding Studio (Lazy Load Fix)", page_icon="🛒")
+st.title("🛒 SHOPIFY ULTIMATE CSV + BRANDING STUDIO V3.4 (LAZY LOAD FIX)")
+st.markdown("**Now fetches all images (data-src, lazy-src, original)**")
 
 st.components.v1.html("""
 <script>
@@ -61,7 +61,7 @@ st.components.v1.html("""
 """, height=0)
 
 # ============================================================
-# BRANDING STUDIO UI (FULL)
+# BRANDING STUDIO UI
 # ============================================================
 st.subheader("🎨 Branding Studio (Optional)")
 with st.expander("⚙️ Configure Image Branding", expanded=True):
@@ -226,7 +226,7 @@ def generate_handle(title):
     return handle
 
 # ============================================================
-# IMAGE EDITOR (QUALITY 70)
+# IMAGE EDITOR
 # ============================================================
 def edit_image(img_data, filename, config):
     try:
@@ -366,7 +366,7 @@ def edit_image(img_data, filename, config):
             return None, None
 
 # ============================================================
-# SHOPIFY SCRAPER (FIXED: Images now separate rows)
+# SHOPIFY SCRAPER (FIXED: Lazy Load Images + 5 Images Limit)
 # ============================================================
 def scrape_shopify_product(url, session, config):
     headers = {'User-Agent': random.choice(USER_AGENTS)}
@@ -426,20 +426,36 @@ def scrape_shopify_product(url, session, config):
     rand_suffix = ''.join(random.choices('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', k=4))
     parent_sku = f"CUSTOM-{rand_suffix}-{sku_raw}"
 
+    # ============================================================
+    # 🔥 FIX: LAZY LOAD IMAGES (data-src, data-lazy-src, data-original)
+    # ============================================================
     raw_image_urls = []
+    
+    # 1. JSON-LD se images
     if product_data.get('image'):
-        if isinstance(product_data['image'], list): raw_image_urls.extend(product_data['image'])
-        else: raw_image_urls.append(product_data['image'])
+        if isinstance(product_data['image'], list):
+            raw_image_urls.extend(product_data['image'])
+        else:
+            raw_image_urls.append(product_data['image'])
+    
+    # 2. OG image
     og_img = soup.find('meta', property='og:image')
-    if og_img and og_img.get('content'): raw_image_urls.append(og_img.get('content'))
+    if og_img and og_img.get('content'):
+        raw_image_urls.append(og_img.get('content'))
+    
+    # 3. HTML img tags (with lazy load support)
     for img in soup.find_all('img'):
-        src = img.get('data-src') or img.get('src')
+        # Multiple attributes check karo (lazy loading wali sites ke liye)
+        src = img.get('src') or img.get('data-src') or img.get('data-lazy-src') or img.get('data-original')
         if src and not src.endswith('.svg') and 'logo' not in src.lower():
             full_url = urljoin(base_url_domain, src)
-            if full_url not in raw_image_urls: raw_image_urls.append(full_url)
+            if full_url not in raw_image_urls:
+                raw_image_urls.append(full_url)
     
+    # Remove duplicates and keep only http(s) URLs, limit to 5
     raw_image_urls = [im for im in raw_image_urls if im.startswith('http')][:5]
 
+    # Process images (edit or keep original)
     image_zip_data = {}
     processed_image_urls = []
     
@@ -459,7 +475,7 @@ def scrape_shopify_product(url, session, config):
     else:
         processed_image_urls = raw_image_urls
     
-    # -------------------- SHOPIFY IMAGES FIX (SPLIT INTO ROWS) --------------------
+    # Shopify formatting: pehli image main row mein, baqi additional rows mein
     main_image = processed_image_urls[0] if processed_image_urls else ''
     additional_images = processed_image_urls[1:] if len(processed_image_urls) > 1 else []
 
@@ -471,6 +487,7 @@ def scrape_shopify_product(url, session, config):
     tags = "Imported"
     handle = generate_handle(title)
     
+    # Extract variants
     offers = product_data.get('offers')
     variations_data = []
     if isinstance(offers, list) and len(offers) > 1:
@@ -497,41 +514,83 @@ def scrape_shopify_product(url, session, config):
         if len(attr_names) > 1: opt2_name = attr_names[1]
         if len(attr_names) > 2: opt3_name = attr_names[2]
 
-    # -------------------- PARENT ROW (WITH MAIN IMAGE) --------------------
+    # ============================================================
+    # PARENT ROW (with main image)
+    # ============================================================
     parent_row = {
-        'Title': title, 'URL handle': handle, 'Description': long_desc, 'Vendor': vendor,
-        'Product category': category_str, 'Type': 'Graphic shirt' if 'shirt' in title.lower() else 'Clothing',
-        'Tags': tags, 'Published on online store': 'TRUE', 'Status': 'active', 'SKU': '',
-        'Barcode': '', 'Option1 name': opt1_name, 'Option1 value': '', 'Option1 Linked To': 'Option1 name' if opt1_name else '',
-        'Option2 name': opt2_name, 'Option2 value': '', 'Option2 Linked To': 'Option2 name' if opt2_name else '',
-        'Option3 name': opt3_name, 'Option3 value': '', 'Option3 Linked To': 'Option3 name' if opt3_name else '',
-        'Price': '', 'Compare-at price': '', 'Cost per item': '', 'Charge tax': 'TRUE', 'Tax code': '',
-        'Unit price total measure': '', 'Unit price total measure unit': '', 'Unit price base measure': '', 'Unit price base measure unit': '',
-        'Inventory tracker': '', 'Inventory quantity': '', 'Continue selling when out of stock': '',
-        'Weight value (grams)': '', 'Weight unit for display': '', 'Requires shipping': 'TRUE',
-        'Fulfillment service': 'manual', 
-        'Product image URL': main_image,  # 🔥 SIRF PEHLI IMAGE
+        'Title': title,
+        'URL handle': handle,
+        'Description': long_desc,
+        'Vendor': vendor,
+        'Product category': category_str,
+        'Type': 'Graphic shirt' if 'shirt' in title.lower() else 'Clothing',
+        'Tags': tags,
+        'Published on online store': 'TRUE',
+        'Status': 'active',
+        'SKU': '',
+        'Barcode': '',
+        'Option1 name': opt1_name,
+        'Option1 value': '',
+        'Option1 Linked To': 'Option1 name' if opt1_name else '',
+        'Option2 name': opt2_name,
+        'Option2 value': '',
+        'Option2 Linked To': 'Option2 name' if opt2_name else '',
+        'Option3 name': opt3_name,
+        'Option3 value': '',
+        'Option3 Linked To': 'Option3 name' if opt3_name else '',
+        'Price': '',
+        'Compare-at price': '',
+        'Cost per item': '',
+        'Charge tax': 'TRUE',
+        'Tax code': '',
+        'Unit price total measure': '',
+        'Unit price total measure unit': '',
+        'Unit price base measure': '',
+        'Unit price base measure unit': '',
+        'Inventory tracker': '',
+        'Inventory quantity': '',
+        'Continue selling when out of stock': '',
+        'Weight value (grams)': '',
+        'Weight unit for display': '',
+        'Requires shipping': 'TRUE',
+        'Fulfillment service': 'manual',
+        'Product image URL': main_image,
         'Image position': '1',
-        'Image alt text': title, 'Variant image URL': '', 'Gift card': 'FALSE',
-        'SEO title': title, 'SEO description': long_desc[:300],
-        'Color (product.metafields.shopify.color-pattern)': '', 'Google Shopping / Google product category': category_str,
-        'Google Shopping / Gender': '', 'Google Shopping / Age group': '', 'Google Shopping / Manufacturer part number (MPN)': '',
-        'Google Shopping / Ad group name': '', 'Google Shopping / Ads labels': '', 'Google Shopping / Condition': '',
-        'Google Shopping / Custom product': '', 'Google Shopping / Custom label 0': '', 'Google Shopping / Custom label 1': '',
-        'Google Shopping / Custom label 2': '', 'Google Shopping / Custom label 3': '', 'Google Shopping / Custom label 4': ''
+        'Image alt text': title,
+        'Variant image URL': '',
+        'Gift card': 'FALSE',
+        'SEO title': title,
+        'SEO description': long_desc[:300],
+        'Color (product.metafields.shopify.color-pattern)': '',
+        'Google Shopping / Google product category': category_str,
+        'Google Shopping / Gender': '',
+        'Google Shopping / Age group': '',
+        'Google Shopping / Manufacturer part number (MPN)': '',
+        'Google Shopping / Ad group name': '',
+        'Google Shopping / Ads labels': '',
+        'Google Shopping / Condition': '',
+        'Google Shopping / Custom product': '',
+        'Google Shopping / Custom label 0': '',
+        'Google Shopping / Custom label 1': '',
+        'Google Shopping / Custom label 2': '',
+        'Google Shopping / Custom label 3': '',
+        'Google Shopping / Custom label 4': ''
     }
 
-    # -------------------- ADDITIONAL IMAGE ROWS (SIRF HANDLE + IMAGE URL) --------------------
+    # ============================================================
+    # ADDITIONAL IMAGE ROWS (Shopify guidelines ke mutabiq)
+    # ============================================================
     image_rows = []
     for idx, img_url in enumerate(additional_images, start=2):
-        # Empty row template
         img_row = {col: '' for col in SHOPIFY_COLUMNS}
         img_row['URL handle'] = handle
         img_row['Product image URL'] = img_url
         img_row['Image position'] = str(idx)
         image_rows.append(img_row)
 
-    # -------------------- VARIATIONS ROWS --------------------
+    # ============================================================
+    # VARIANT ROWS
+    # ============================================================
     variant_rows = []
     if variations_data:
         for idx, var in enumerate(variations_data):
@@ -542,6 +601,7 @@ def scrape_shopify_product(url, session, config):
             attr2_val = list(var_attrs.values())[1] if len(var_attrs) > 1 else ''
             attr3_val = list(var_attrs.values())[2] if len(var_attrs) > 2 else ''
 
+            # Variant image
             var_img = var.get('image', '')
             var_img_url = ''
             if config.get('edit_images', False) and var_img:
@@ -558,29 +618,67 @@ def scrape_shopify_product(url, session, config):
                 var_img_url = ''
 
             variant_row = {
-                'Title': '', 'URL handle': handle, 'Description': '', 'Vendor': '', 'Product category': '',
-                'Type': '', 'Tags': '', 'Published on online store': 'TRUE', 'Status': 'active',
-                'SKU': var_sku, 'Barcode': random.randint(1000000000, 9999999999),
-                'Option1 name': '', 'Option1 value': attr1_val, 'Option1 Linked To': '',
-                'Option2 name': '', 'Option2 value': attr2_val, 'Option2 Linked To': '',
-                'Option3 name': '', 'Option3 value': attr3_val, 'Option3 Linked To': '',
-                'Price': var_price, 'Compare-at price': '', 'Cost per item': '', 'Charge tax': 'TRUE', 'Tax code': '',
-                'Unit price total measure': '', 'Unit price total measure unit': '', 'Unit price base measure': '', 'Unit price base measure unit': '',
-                'Inventory tracker': 'shopify', 'Inventory quantity': 10, 'Continue selling when out of stock': 'DENY',
-                'Weight value (grams)': 150, 'Weight unit for display': 'g', 'Requires shipping': 'TRUE',
-                'Fulfillment service': 'manual', 'Product image URL': '', 'Image position': '',
-                'Image alt text': '', 'Variant image URL': var_img_url, 'Gift card': 'FALSE',
-                'SEO title': '', 'SEO description': '',
+                'Title': '',
+                'URL handle': handle,
+                'Description': '',
+                'Vendor': '',
+                'Product category': '',
+                'Type': '',
+                'Tags': '',
+                'Published on online store': 'TRUE',
+                'Status': 'active',
+                'SKU': var_sku,
+                'Barcode': random.randint(1000000000, 9999999999),
+                'Option1 name': '',
+                'Option1 value': attr1_val,
+                'Option1 Linked To': '',
+                'Option2 name': '',
+                'Option2 value': attr2_val,
+                'Option2 Linked To': '',
+                'Option3 name': '',
+                'Option3 value': attr3_val,
+                'Option3 Linked To': '',
+                'Price': var_price,
+                'Compare-at price': '',
+                'Cost per item': '',
+                'Charge tax': 'TRUE',
+                'Tax code': '',
+                'Unit price total measure': '',
+                'Unit price total measure unit': '',
+                'Unit price base measure': '',
+                'Unit price base measure unit': '',
+                'Inventory tracker': 'shopify',
+                'Inventory quantity': 10,
+                'Continue selling when out of stock': 'DENY',
+                'Weight value (grams)': 150,
+                'Weight unit for display': 'g',
+                'Requires shipping': 'TRUE',
+                'Fulfillment service': 'manual',
+                'Product image URL': '',
+                'Image position': '',
+                'Image alt text': '',
+                'Variant image URL': var_img_url,
+                'Gift card': 'FALSE',
+                'SEO title': '',
+                'SEO description': '',
                 'Color (product.metafields.shopify.color-pattern)': attr2_val if opt2_name.lower() == 'color' else attr1_val if opt1_name.lower() == 'color' else '',
-                'Google Shopping / Google product category': '', 'Google Shopping / Gender': '',
-                'Google Shopping / Age group': '', 'Google Shopping / Manufacturer part number (MPN)': f'MPN-{var_sku}',
-                'Google Shopping / Ad group name': '', 'Google Shopping / Ads labels': '',
-                'Google Shopping / Condition': 'New', 'Google Shopping / Custom product': '',
-                'Google Shopping / Custom label 0': '', 'Google Shopping / Custom label 1': '',
-                'Google Shopping / Custom label 2': '', 'Google Shopping / Custom label 3': '', 'Google Shopping / Custom label 4': ''
+                'Google Shopping / Google product category': '',
+                'Google Shopping / Gender': '',
+                'Google Shopping / Age group': '',
+                'Google Shopping / Manufacturer part number (MPN)': f'MPN-{var_sku}',
+                'Google Shopping / Ad group name': '',
+                'Google Shopping / Ads labels': '',
+                'Google Shopping / Condition': 'New',
+                'Google Shopping / Custom product': '',
+                'Google Shopping / Custom label 0': '',
+                'Google Shopping / Custom label 1': '',
+                'Google Shopping / Custom label 2': '',
+                'Google Shopping / Custom label 3': '',
+                'Google Shopping / Custom label 4': ''
             }
             variant_rows.append(variant_row)
     
+    # Agar simple product hai (no variants)
     if not variations_data:
         parent_row['SKU'] = parent_sku
         parent_row['Price'] = price
@@ -832,4 +930,4 @@ if st.session_state.is_ready:
                         st.session_state[key] = None
             st.rerun()
 
-st.caption("🛒 Shopify V3.3 FINAL | Images Fixed as per Shopify Guidelines | Batch Mode | 1000 MB ZIP Limit")
+st.caption("🛒 Shopify V3.4 FINAL | Lazy Load Images Fixed | Batch Mode | 1000 MB ZIP Limit")
