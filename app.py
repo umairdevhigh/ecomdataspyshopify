@@ -48,9 +48,9 @@ if 'all_urls' not in st.session_state:
 # ============================================================
 # PAGE CONFIG
 # ============================================================
-st.set_page_config(page_title="Shopify + Branding Studio (Lazy Load Fix)", page_icon="🛒")
-st.title("🛒 SHOPIFY ULTIMATE CSV + BRANDING STUDIO V3.4 (LAZY LOAD FIX)")
-st.markdown("**Now fetches all images (data-src, lazy-src, original)**")
+st.set_page_config(page_title="Shopify + Branding Studio (Variant Fix)", page_icon="🛒")
+st.title("🛒 SHOPIFY ULTIMATE CSV + BRANDING STUDIO V3.5 (VARIANT IMAGES FIX)")
+st.markdown("**Now handles variant images correctly | No duplicate images in ZIP**")
 
 st.components.v1.html("""
 <script>
@@ -366,7 +366,7 @@ def edit_image(img_data, filename, config):
             return None, None
 
 # ============================================================
-# SHOPIFY SCRAPER (FIXED: Lazy Load Images + 5 Images Limit)
+# SHOPIFY SCRAPER (FIXED: VARIANT IMAGES)
 # ============================================================
 def scrape_shopify_product(url, session, config):
     headers = {'User-Agent': random.choice(USER_AGENTS)}
@@ -427,35 +427,33 @@ def scrape_shopify_product(url, session, config):
     parent_sku = f"CUSTOM-{rand_suffix}-{sku_raw}"
 
     # ============================================================
-    # 🔥 FIX: LAZY LOAD IMAGES (data-src, data-lazy-src, data-original)
+    # IMAGE COLLECTION (MAIN IMAGES)
     # ============================================================
     raw_image_urls = []
     
-    # 1. JSON-LD se images
+    # JSON-LD se images
     if product_data.get('image'):
         if isinstance(product_data['image'], list):
             raw_image_urls.extend(product_data['image'])
         else:
             raw_image_urls.append(product_data['image'])
     
-    # 2. OG image
+    # OG image
     og_img = soup.find('meta', property='og:image')
     if og_img and og_img.get('content'):
         raw_image_urls.append(og_img.get('content'))
     
-    # 3. HTML img tags (with lazy load support)
+    # HTML img tags (lazy load support)
     for img in soup.find_all('img'):
-        # Multiple attributes check karo (lazy loading wali sites ke liye)
         src = img.get('src') or img.get('data-src') or img.get('data-lazy-src') or img.get('data-original')
         if src and not src.endswith('.svg') and 'logo' not in src.lower():
             full_url = urljoin(base_url_domain, src)
             if full_url not in raw_image_urls:
                 raw_image_urls.append(full_url)
     
-    # Remove duplicates and keep only http(s) URLs, limit to 5
     raw_image_urls = [im for im in raw_image_urls if im.startswith('http')][:5]
 
-    # Process images (edit or keep original)
+    # Process main images (edit or keep original)
     image_zip_data = {}
     processed_image_urls = []
     
@@ -475,10 +473,12 @@ def scrape_shopify_product(url, session, config):
     else:
         processed_image_urls = raw_image_urls
     
-    # Shopify formatting: pehli image main row mein, baqi additional rows mein
     main_image = processed_image_urls[0] if processed_image_urls else ''
     additional_images = processed_image_urls[1:] if len(processed_image_urls) > 1 else []
 
+    # ============================================================
+    # CATEGORY, VENDOR, HANDLE
+    # ============================================================
     category_str = format_category(soup)
     vendor = "Imported Vendor"
     if soup.find('meta', attrs={'name': 'author'}):
@@ -487,7 +487,9 @@ def scrape_shopify_product(url, session, config):
     tags = "Imported"
     handle = generate_handle(title)
     
-    # Extract variants
+    # ============================================================
+    # EXTRACT VARIANTS
+    # ============================================================
     offers = product_data.get('offers')
     variations_data = []
     if isinstance(offers, list) and len(offers) > 1:
@@ -499,11 +501,34 @@ def scrape_shopify_product(url, session, config):
                 if 'size' in offer: var_attrs['Size'] = offer['size']
                 if 'color' in offer: var_attrs['Color'] = offer['color']
                 if not var_attrs: var_attrs['Option'] = f'Variant {len(variations_data)+1}'
+                
+                # 🔥 FIX: Try to get variant-specific image from the offer
+                var_img = offer.get('image', '')
+                # If no image in offer, try to find image based on SKU or option value from the page
+                if not var_img:
+                    # Search HTML for image with matching SKU or alt text
+                    for img in soup.find_all('img'):
+                        img_alt = img.get('alt', '').lower()
+                        img_src = img.get('src') or img.get('data-src') or ''
+                        # Check if alt text contains the option value (e.g., 'black', 'brown')
+                        if var_attrs:
+                            for attr_name, attr_val in var_attrs.items():
+                                if attr_val.lower() in img_alt.lower() or attr_val.lower() in img_src.lower():
+                                    var_img = urljoin(base_url_domain, img_src)
+                                    break
+                        if var_img:
+                            break
+                
                 variations_data.append({
-                    'sku': var_sku, 'price': var_price, 'attrs': var_attrs,
-                    'image': offer.get('image', '')
+                    'sku': var_sku,
+                    'price': var_price,
+                    'attrs': var_attrs,
+                    'image': var_img  # Now this will be the correct image if found
                 })
 
+    # ============================================================
+    # OPTION NAMES
+    # ============================================================
     opt1_name = opt2_name = opt3_name = ''
     if variations_data:
         attr_names = set()
@@ -515,7 +540,7 @@ def scrape_shopify_product(url, session, config):
         if len(attr_names) > 2: opt3_name = attr_names[2]
 
     # ============================================================
-    # PARENT ROW (with main image)
+    # PARENT ROW
     # ============================================================
     parent_row = {
         'Title': title,
@@ -578,7 +603,7 @@ def scrape_shopify_product(url, session, config):
     }
 
     # ============================================================
-    # ADDITIONAL IMAGE ROWS (Shopify guidelines ke mutabiq)
+    # ADDITIONAL IMAGE ROWS
     # ============================================================
     image_rows = []
     for idx, img_url in enumerate(additional_images, start=2):
@@ -589,7 +614,7 @@ def scrape_shopify_product(url, session, config):
         image_rows.append(img_row)
 
     # ============================================================
-    # VARIANT ROWS
+    # VARIANT ROWS (WITH CORRECT IMAGES)
     # ============================================================
     variant_rows = []
     if variations_data:
@@ -601,10 +626,12 @@ def scrape_shopify_product(url, session, config):
             attr2_val = list(var_attrs.values())[1] if len(var_attrs) > 1 else ''
             attr3_val = list(var_attrs.values())[2] if len(var_attrs) > 2 else ''
 
-            # Variant image
+            # 🔥 FIX: VARIANT IMAGE HANDLING
             var_img = var.get('image', '')
             var_img_url = ''
-            if config.get('edit_images', False) and var_img:
+            
+            # If variant has specific image, process it
+            if var_img and config.get('edit_images', False):
                 try:
                     img_resp = session.get(var_img, timeout=15)
                     if img_resp.status_code == 200:
@@ -614,6 +641,10 @@ def scrape_shopify_product(url, session, config):
                             var_img_url = new_name
                 except:
                     var_img_url = var_img
+            elif var_img:
+                var_img_url = var_img
+            
+            # If still no image, leave blank (do NOT use main_image as fallback)
             if not var_img_url:
                 var_img_url = ''
 
@@ -657,7 +688,7 @@ def scrape_shopify_product(url, session, config):
                 'Product image URL': '',
                 'Image position': '',
                 'Image alt text': '',
-                'Variant image URL': var_img_url,
+                'Variant image URL': var_img_url,  # Now correct image, or blank
                 'Gift card': 'FALSE',
                 'SEO title': '',
                 'SEO description': '',
@@ -678,7 +709,6 @@ def scrape_shopify_product(url, session, config):
             }
             variant_rows.append(variant_row)
     
-    # Agar simple product hai (no variants)
     if not variations_data:
         parent_row['SKU'] = parent_sku
         parent_row['Price'] = price
@@ -690,7 +720,6 @@ def scrape_shopify_product(url, session, config):
         parent_row['Fulfillment service'] = 'manual'
         parent_row['Barcode'] = random.randint(1000000000, 9999999999)
 
-    # Combine all rows: Parent -> Image Rows -> Variant Rows
     final_rows = [parent_row] + image_rows + variant_rows
     
     return final_rows, image_zip_data, None
@@ -930,4 +959,4 @@ if st.session_state.is_ready:
                         st.session_state[key] = None
             st.rerun()
 
-st.caption("🛒 Shopify V3.4 FINAL | Lazy Load Images Fixed | Batch Mode | 1000 MB ZIP Limit")
+st.caption("🛒 Shopify V3.5 FINAL | Variant Images Fixed | No Duplicates in ZIP")
